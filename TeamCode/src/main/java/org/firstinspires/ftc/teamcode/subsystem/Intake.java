@@ -27,6 +27,7 @@ public class Intake {
         gate = hardwareMap.get(Servo.class, GATE);
 
         intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         gateClose();
     }
 

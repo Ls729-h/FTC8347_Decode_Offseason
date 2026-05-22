@@ -5,11 +5,9 @@ import static org.firstinspires.ftc.teamcode.constants.robotConfigs.TURRET;
 import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
-import com.qualcomm.robotcore.util.Range;
 
 import org.firstinspires.ftc.teamcode.subsystem.Shooter;
 
@@ -19,27 +17,43 @@ public class TurretEncoderTest extends LinearOpMode {
     public static double MANUAL_POWER = 0.25;
 
     private DcMotorEx turret;
-    private AnalogInput absoluteEncoder;
+    private DcMotorEx turretEncoder;
+    private long lastEncoderTime = 0;
+    private double lastEncoderDeg = 0.0;
+    private double encoderVelDeg = 0.0;
 
     @Override
     public void runOpMode() throws InterruptedException {
         turret = hardwareMap.get(DcMotorEx.class, TURRET);
-        absoluteEncoder = hardwareMap.get(AnalogInput.class, Shooter.TURRET_ABS_ENCODER);
+        turretEncoder = hardwareMap.get(DcMotorEx.class, Shooter.TURRET_ENCODER);
 
         turret.setDirection(DcMotorSimple.Direction.REVERSE);
         turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         turret.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        turretEncoder.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        turretEncoder.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
         waitForStart();
 
+        lastEncoderTime = System.nanoTime();
+        lastEncoderDeg = rawEncoderAngleDeg();
+
         while (opModeIsActive()) {
             if (gamepad1.y) {
-                Shooter.TURRET_ABS_ZERO_DEG = rawAbsAngleDeg();
+                Shooter.TURRET_ENCODER_ZERO_DEG = rawEncoderAngleDeg();
             }
             if (gamepad1.x) {
                 turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
                 turret.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+            }
+            if (gamepad1.b) {
+                turretEncoder.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+                turretEncoder.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+                Shooter.TURRET_ENCODER_ZERO_DEG = 0.0;
+                lastEncoderTime = System.nanoTime();
+                lastEncoderDeg = rawEncoderAngleDeg();
+                encoderVelDeg = 0.0;
             }
 
             double power = 0.0;
@@ -50,42 +64,44 @@ public class TurretEncoderTest extends LinearOpMode {
             }
             turret.setPower(power);
 
-            double rawAbs = rawAbsAngleDeg();
-            double absDeg = normalizeDegrees(rawAbs - Shooter.TURRET_ABS_ZERO_DEG);
+            double rawEncoderDeg = rawEncoderAngleDeg();
+            double encoderDeg = rawEncoderDeg - Shooter.TURRET_ENCODER_ZERO_DEG;
+            double encoderTicks = turretEncoder.getCurrentPosition();
+
+            long now = System.nanoTime();
+            double dtSeconds = (now - lastEncoderTime) / 1e9;
+            if (dtSeconds > 0.0001) {
+                encoderVelDeg = (rawEncoderDeg - lastEncoderDeg) / dtSeconds;
+                lastEncoderDeg = rawEncoderDeg;
+                lastEncoderTime = now;
+            }
+
             double motorTicks = turret.getCurrentPosition();
             double motorDeg = motorTicks / Shooter.TURRET_FULL_RANGE_ENCODER * Shooter.TURRET_FULL_RANGE_DEGREE;
             double motorVelTicks = turret.getVelocity();
             double motorVelDeg = motorVelTicks / Shooter.TURRET_FULL_RANGE_ENCODER * Shooter.TURRET_FULL_RANGE_DEGREE;
 
-            telemetry.addData("abs voltage", "%.4f / %.2f", absoluteEncoder.getVoltage(), absMaxVoltage());
-            telemetry.addData("abs raw deg", "%.2f", rawAbs);
-            telemetry.addData("abs zero deg", "%.2f", Shooter.TURRET_ABS_ZERO_DEG);
-            telemetry.addData("abs normalized deg", "%.2f", absDeg);
+            telemetry.addData("ELC ticks", "%.0f", encoderTicks);
+            telemetry.addData("ELC raw deg", "%.2f", rawEncoderDeg);
+            telemetry.addData("ELC zero deg", "%.2f", Shooter.TURRET_ENCODER_ZERO_DEG);
+            telemetry.addData("ELC normalized deg", "%.2f", encoderDeg);
+            telemetry.addData("ELC vel deg/s", "%.2f", encoderVelDeg);
+            telemetry.addData("ELC port", Shooter.TURRET_ENCODER);
             telemetry.addData("motor ticks", "%.0f", motorTicks);
             telemetry.addData("motor deg", "%.2f", motorDeg);
             telemetry.addData("motor vel ticks/s", "%.2f", motorVelTicks);
             telemetry.addData("motor vel deg/s", "%.2f", motorVelDeg);
             telemetry.addData("manual power", "%.2f", power);
-            telemetry.addData("Y", "zero absolute encoder");
+            telemetry.addData("Y", "software zero ELC encoder");
             telemetry.addData("X", "reset motor encoder");
+            telemetry.addData("B", "reset ELC encoder ticks");
             telemetry.update();
         }
     }
 
-    private double rawAbsAngleDeg() {
-        double angle = Range.clip(absoluteEncoder.getVoltage() / absMaxVoltage(), 0.0, 1.0) * 360.0;
-        return Shooter.TURRET_ABS_REVERSED ? normalizeDegrees(-angle) : normalizeDegrees(angle);
+    private double rawEncoderAngleDeg() {
+        double angle = Shooter.turretEncoderTicksToTurretDegrees(turretEncoder.getCurrentPosition());
+        return Shooter.TURRET_ENCODER_REVERSED ? -angle : angle;
     }
 
-    private double absMaxVoltage() {
-        return Shooter.TURRET_ABS_MAX_VOLTAGE > 0.0
-                ? Shooter.TURRET_ABS_MAX_VOLTAGE
-                : absoluteEncoder.getMaxVoltage();
-    }
-
-    private static double normalizeDegrees(double degrees) {
-        while (degrees > 180.0) degrees -= 360.0;
-        while (degrees <= -180.0) degrees += 360.0;
-        return degrees;
-    }
 }

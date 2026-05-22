@@ -1,13 +1,13 @@
 package org.firstinspires.ftc.teamcode.subsystem;
 
 import static org.firstinspires.ftc.teamcode.constants.robotConfigs.HOOD;
+import static org.firstinspires.ftc.teamcode.constants.robotConfigs.INTAKE;
 import static org.firstinspires.ftc.teamcode.constants.robotConfigs.LEFT_SHOOTER;
 import static org.firstinspires.ftc.teamcode.constants.robotConfigs.RIGHT_SHOOTER;
 import static org.firstinspires.ftc.teamcode.constants.robotConfigs.TURRET;
 
 import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
-import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
@@ -26,47 +26,53 @@ public class Shooter {
     public DcMotorEx leftShooter;
     public DcMotorEx rightShooter;
     public DcMotorEx turret;
-    public Servo panel;
+//    public Servo panel;
     //    public Servo led;
     public static double targetVelocity = 0, spKp = 0.027, spKi = 0.0, spKd = 0.236, basePower = 0.17, tor = 0.025, hoodCorrection = 0.045;
     public static double SHOOTER_KP = 0.0;
     public static double SHOOTER_KI = 0.0;
     public static double SHOOTER_KD = 0.0;
     public static double SHOOTER_KF = 0.0;
-    public static double VELOCITY_TOR = 50.0;
     public static double TURRET_FULL_RANGE_DEGREE = 175.0;
     public static double TURRET_FULL_RANGE_ENCODER = 566.0;
-    public static String TURRET_ABS_ENCODER = "turretEncoder";
-    public static double TURRET_ABS_ZERO_DEG = 0.0;
-    public static double TURRET_ABS_MAX_VOLTAGE = 3.3;
-    public static boolean TURRET_ABS_REVERSED = false;
-    public static double TURRET_AUTO_kP = 30.0;
+    public static String TURRET_ENCODER = INTAKE;
+    public static double TURRET_ENCODER_CPR = 4000.0;
+    public static double TURRET_ENCODER_TO_TURRET_RATIO = 8.0;
+    public static double TURRET_ENCODER_ZERO_DEG = 0.0;
+    public static boolean TURRET_ENCODER_REVERSED = false;
+    public static double TURRET_HEADING_SIGN = 1.0;
+    public static double TURRET_GEOMETRY_SIGN = -1.0;
+    public static double TURRET_POWER_TO_ANGLE_SIGN = 0.0;
+    public static double TURRET_AUTO_kP = 5.0;
     public static double TURRET_AUTO_kI = 0.0;
     public static double TURRET_AUTO_kD = 0.0;
-    public static double TURRET_AUTO_kV = 0.001112;
-    public static double TURRET_AUTO_kS = 0.232351;
-    public static double TURRET_AUTO_kA = 0.000097;
+    public static double TURRET_AUTO_kV = 0.002014;
+    public static double TURRET_AUTO_kS = 0.088620;
+    public static double TURRET_AUTO_kA = 0.000126;
     public static double TURRET_AUTO_DEADZONE_DEG = 0.8;
     public static double TURRET_AUTO_MAX_POWER = 1.0;
     public static double TURRET_AUTO_ANGLE_FILTER_ALPHA = 0.7;
-    public static double TURRET_AUTO_VEL_FILTER_ALPHA = 0.9;
-    public static double TURRET_AUTO_ACCEL_FILTER_ALPHA = 0.2;
-    public static double TURRET_AUTO_kLINEAR_BRAKING = 0.007020;
-    public static double TURRET_AUTO_kQUADRATIC_BRAKING = 0.000104;
-    public static double TURRET_AUTO_MIN_ANGLE_DEG = -210.0;
-    public static double TURRET_AUTO_MAX_ANGLE_DEG = 175.0;
-    public static double TURRET_AUTO_TUNING_VOLTAGE = 12.52;
+    public static double TURRET_AUTO_VEL_FILTER_ALPHA = 0.35;
+    public static double TURRET_AUTO_ACCEL_FILTER_ALPHA = 0.10;
+    public static double TURRET_AUTO_kLINEAR_BRAKING = 0.071480;
+    public static double TURRET_AUTO_kQUADRATIC_BRAKING = 0;
+    public static double TURRET_AUTO_MAX_REASONABLE_VEL_DEG_PER_SEC = 1000.0;
+    public static double TURRET_AUTO_MIN_ANGLE_DEG = -141.21;
+    public static double TURRET_AUTO_MAX_ANGLE_DEG = 200.00;
+    public static double TURRET_AUTO_TUNING_VOLTAGE = 12.97;
     ElapsedTime dt = new ElapsedTime();
     double error, lastError, integral, derivative, lastTarget = 0.0, power = 0.0;
     GoBildaPinpointDriver shooterPP;
-    private AnalogInput turretAbsEncoder;
+    private DcMotorEx turretEncoder;
     private HardwareMap hardwareMap;
     private double autoIntegral = 0.0;
     private double filteredTurretAbsAngle = 0.0;
-    private double lastMotorTurretAngle = 0.0;
+    private double lastRawTurretAngle = 0.0;
     private double filteredTurretVel = 0.0;
     private double lastFilteredTurretVel = 0.0;
     private double filteredTurretAccel = 0.0;
+    private double lastAppliedTurretPower = 0.0;
+    private double learnedPowerToAngleSign = 0.0;
     private long lastAutoTime = 0;
     private long lastVoltageReadTime = 0;
     private double currentBatteryVoltage = 12.0;
@@ -77,34 +83,25 @@ public class Shooter {
         leftShooter = hardwareMap.get(DcMotorEx.class, LEFT_SHOOTER);
         rightShooter = hardwareMap.get(DcMotorEx.class, RIGHT_SHOOTER);
         turret = hardwareMap.get(DcMotorEx.class, TURRET);
-        panel = hardwareMap.get(Servo.class, HOOD);
-        turretAbsEncoder = hardwareMap.get(AnalogInput.class, TURRET_ABS_ENCODER);
+//        panel = hardwareMap.get(Servo.class, HOOD);
+        turretEncoder = hardwareMap.get(DcMotorEx.class, TURRET_ENCODER);
         try {
             shooterPP = hardwareMap.get(GoBildaPinpointDriver.class, "spp");
         } catch (Exception ignored) {
             shooterPP = null;
         }
-//        led = hardwareMap.get(Servo.class, LED);
 
         leftShooter.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         rightShooter.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         turret.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        turretEncoder.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        turretEncoder.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
-//        rightShooter.setDirection(DcMotorSimple.Direction.REVERSE);
         leftShooter.setDirection(DcMotorSimple.Direction.REVERSE);
         turret.setDirection(DcMotorSimple.Direction.REVERSE);
 
-//        turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
-//        turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-//        turret.setPower(0);
-
         leftShooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
         rightShooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-
-        turret.setPositionPIDFCoefficients(15);
-
-//        turret.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
-//        turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
         leftShooter.setVelocityPIDFCoefficients(SHOOTER_KP, SHOOTER_KI, SHOOTER_KD, SHOOTER_KF);
         rightShooter.setVelocityPIDFCoefficients(SHOOTER_KP, SHOOTER_KI, SHOOTER_KD, SHOOTER_KF);
@@ -115,7 +112,19 @@ public class Shooter {
         resetAutoAimState();
         turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         turret.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        turret.setPower(0);
+        setTurretMotorPower(0.0);
+    }
+
+    public static double turretEncoderTicksToTurretDegrees(double encoderTicks) {
+        double cpr = Math.abs(TURRET_ENCODER_CPR) > 1e-9 ? Math.abs(TURRET_ENCODER_CPR) : 4000.0;
+        double ratio = Math.abs(TURRET_ENCODER_TO_TURRET_RATIO) > 1e-9
+                ? Math.abs(TURRET_ENCODER_TO_TURRET_RATIO)
+                : 1.0;
+        return encoderTicks / cpr * 360.0 / ratio;
+    }
+
+    public static double turretEncoderVelocityToTurretDegPerSec(double encoderTicksPerSecond) {
+        return turretEncoderTicksToTurretDegrees(encoderTicksPerSecond);
     }
 
     public void setShooterVelocity(double velocity) {
@@ -124,31 +133,6 @@ public class Shooter {
         leftShooter.setVelocity(velocity);
         rightShooter.setVelocity(velocity);
     }
-
-    public double getShooterVelocity() {
-        return (rightShooter.getVelocity() + leftShooter.getVelocity()) / 2.0;
-    }
-
-    public boolean shooterReady(double target) {
-        return Math.abs(getShooterVelocity() - target) <= VELOCITY_TOR;
-    }
-
-//    public void displayRed() {
-//        led.setPosition(0.285);
-//    }
-//
-//    public void displayYellow() {
-//        led.setPosition(0.388);
-//    }
-//
-//    public void displayGreen() {
-//        led.setPosition(0.500);
-//    }
-//
-//    public void displayOff() {
-//        led.setPosition(0.0);
-//    }
-
     public void shooterHold() {
         leftShooter.setVelocity(1360);
         rightShooter.setVelocity(1360);
@@ -158,25 +142,8 @@ public class Shooter {
         leftShooter.setPower(0);
         rightShooter.setPower(0);
     }
-
-    public void turretRotateLeft() {
-        resetAutoAimState();
-        turret.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        turret.setPower(0.5);
-    }
-
-    public void turretRotateRight() {
-        resetAutoAimState();
-        turret.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        turret.setPower(-0.5);
-    }
-
-    public void turretRotateStop() {
-        turret.setPower(0);
-    }
-
     public void setShooter(double panel, double velocity) {
-        panelTo(Range.clip(panel, 0.0, 1.0));
+//        panelTo(Range.clip(panel, 0.0, 1.0));
         setShooterVelocity(velocity);
     }
 
@@ -188,45 +155,11 @@ public class Shooter {
     public double calculateIntakePower() {
         return Range.clip(f(0, -6E-07, 0.0012, 0.5244, targetVelocity), 0.63, 1.0);
     }
-
-    public long calculateGap() {
-        return (long) Math.max(0.0, f(0.0, -6.13e-5, 0.806, -1342.0, targetVelocity)) + 80;
-    }
-
     public double f(double a, double b, double c, double d, double x) {
         return a * Math.pow(x, 3) + b * Math.pow(x, 2) + c * x + d;
     }
-
-    public int getTurretPosition() {
-        return turret.getCurrentPosition();
-    }
-
-    public double getTurretDegree() {
-        return getTurretPosition() / TURRET_FULL_RANGE_ENCODER * TURRET_FULL_RANGE_DEGREE;
-    }
-
     public void turretToDegree(double degree) {
-        resetAutoAimState();
-        int position = (int) (degree * TURRET_FULL_RANGE_ENCODER / TURRET_FULL_RANGE_DEGREE);
-        turret.setTargetPosition(position);
-        turret.setMode(DcMotor.RunMode.RUN_TO_POSITION);
-        turret.setPower(1);
-    }
-
-    public void panelTo(double pos) {
-        panel.setPosition(pos);
-    }
-
-    public void setPPHeading(double heading) {
-        if (shooterPP != null) {
-            shooterPP.setHeading(heading, AngleUnit.DEGREES);
-        }
-        TURRET_ABS_ZERO_DEG = normalizeDegrees(readRawTurretAbsAngleDeg() - heading);
-        resetAutoAimState();
-    }
-
-    public double getPPHeading() {
-        return getTurretAbsoluteDegree();
+        turretToDegPP(Range.clip(degree, TURRET_AUTO_MIN_ANGLE_DEG, TURRET_AUTO_MAX_ANGLE_DEG));
     }
 
     public double getAngVel() {
@@ -239,7 +172,7 @@ public class Shooter {
         dt.reset();
 
         updateTurretFilters(elapsedMs / 1000.0);
-        error = normalizeDegrees(target - filteredTurretAbsAngle);
+        error = target - filteredTurretAbsAngle;
         integral += error * elapsedMs;
         derivative = -filteredTurretVel / 1000.0;
         lastError = error;
@@ -247,7 +180,7 @@ public class Shooter {
         power = error * spKp + integral * spKi + derivative * spKd;
         if (power > tor && power < basePower) power += basePower;
         else if (power < -tor && power > -basePower) power -= basePower;
-        turret.setPower(Range.clip(power, -1.0, 1.0));
+        applyTurretAnglePower(Range.clip(power, -1.0, 1.0), 1.0);
     }
 
     public TurretAimCommand updateAutoAimTurret(
@@ -294,31 +227,22 @@ public class Shooter {
         useTurretPowerControl();
         updateTurretFilters(dtSeconds);
 
-        double targetFieldAngle = normalizeDegrees(Math.toDegrees(Math.atan2(dy, dx)) + turretCorrectionDeg);
-        double currentTurretAbsFieldAngle = robotHeadingDeg + filteredTurretAbsAngle;
-        double errorDeg = normalizeDegrees(targetFieldAngle - currentTurretAbsFieldAngle);
-        double targetTurretRelAngle = filteredTurretAbsAngle + errorDeg;
-
-        command.isUnwinding = false;
-        while (targetTurretRelAngle > TURRET_AUTO_MAX_ANGLE_DEG) {
-            targetTurretRelAngle -= 360.0;
-            command.isUnwinding = true;
-        }
-        while (targetTurretRelAngle < TURRET_AUTO_MIN_ANGLE_DEG) {
-            targetTurretRelAngle += 360.0;
-            command.isUnwinding = true;
-        }
-
-        if (targetTurretRelAngle > TURRET_AUTO_MAX_ANGLE_DEG || targetTurretRelAngle < TURRET_AUTO_MIN_ANGLE_DEG) {
-            targetTurretRelAngle = Range.clip(targetTurretRelAngle, TURRET_AUTO_MIN_ANGLE_DEG, TURRET_AUTO_MAX_ANGLE_DEG);
-            errorDeg = targetTurretRelAngle - filteredTurretAbsAngle;
-            command.isAtLimit = true;
-        }
+        double geometrySign = getTurretGeometrySign();
+        double signedRobotHeadingDeg = getTurretHeadingSign() * robotHeadingDeg;
+        double targetFieldAngle = normalizeDegrees(Math.toDegrees(Math.atan2(dy, dx)));
+        double currentTurretAbsFieldAngle = normalizeDegrees(signedRobotHeadingDeg + geometrySign * filteredTurretAbsAngle);
+        double fieldErrorDeg = normalizeDegrees(targetFieldAngle - currentTurretAbsFieldAngle);
+        double directTargetTurretAngle = geometrySign * normalizeDegrees(targetFieldAngle - signedRobotHeadingDeg) + turretCorrectionDeg;
+        double targetTurretRelAngle = chooseReachableTurretAngle(directTargetTurretAngle, filteredTurretAbsAngle, command);
+        double errorDeg = targetTurretRelAngle - filteredTurretAbsAngle;
 
         double tolerance = 5.0 + (1.0 - 5.0) / (150.0 - 20.0) * (distance - 20.0);
         command.hasTarget = true;
         command.targetDistance = distance;
         command.targetFieldAngle = targetFieldAngle;
+        command.currentFieldAimAngle = currentTurretAbsFieldAngle;
+        command.fieldError = fieldErrorDeg;
+        command.directTargetTurretAngle = directTargetTurretAngle;
         command.targetTurretAngle = targetTurretRelAngle;
         command.currentTurretAngle = filteredTurretAbsAngle;
         command.error = errorDeg;
@@ -357,27 +281,31 @@ public class Shooter {
 
         command.desiredTurretVelocityDegPerSec = desiredTurretVel;
         command.velocityErrorDegPerSec = velocityError;
-        command.power = Range.clip(turretPower, -TURRET_AUTO_MAX_POWER, TURRET_AUTO_MAX_POWER);
-        turret.setPower(command.power);
+        command.anglePower = Range.clip(turretPower, -TURRET_AUTO_MAX_POWER, TURRET_AUTO_MAX_POWER);
+        command.powerToAngleSign = getPowerToAngleSign();
+        command.power = applyTurretAnglePower(command.anglePower, TURRET_AUTO_MAX_POWER);
         return command;
     }
 
     public void stopAutoAimTurret() {
-        turret.setPower(0);
+        setTurretMotorPower(0.0);
         resetAutoAimState();
     }
 
     public double getTurretAbsoluteDegree() {
-        return normalizeDegrees(readRawTurretAbsAngleDeg() - TURRET_ABS_ZERO_DEG);
+        return readRawTurretEncoderAngleDeg() - TURRET_ENCODER_ZERO_DEG;
+    }
+
+    public double getTurretPowerToAngleSign() {
+        return getPowerToAngleSign();
     }
 
     private void updateTurretFilters(double dtSeconds) {
         double rawAbsAngle = getTurretAbsoluteDegree();
-        double motorAngle = getTurretDegree();
 
         if (!autoAimInitialized || dtSeconds <= 0.0001) {
             filteredTurretAbsAngle = rawAbsAngle;
-            lastMotorTurretAngle = motorAngle;
+            lastRawTurretAngle = rawAbsAngle;
             filteredTurretVel = 0.0;
             lastFilteredTurretVel = 0.0;
             filteredTurretAccel = 0.0;
@@ -385,25 +313,26 @@ public class Shooter {
             return;
         }
 
-        double angleDelta = normalizeDegrees(rawAbsAngle - filteredTurretAbsAngle);
-        filteredTurretAbsAngle = normalizeDegrees(filteredTurretAbsAngle + TURRET_AUTO_ANGLE_FILTER_ALPHA * angleDelta);
+        double angleDelta = rawAbsAngle - filteredTurretAbsAngle;
+        filteredTurretAbsAngle = filteredTurretAbsAngle + TURRET_AUTO_ANGLE_FILTER_ALPHA * angleDelta;
 
-        double rawVel = (motorAngle - lastMotorTurretAngle) / dtSeconds;
+        double rawVel = (rawAbsAngle - lastRawTurretAngle) / dtSeconds;
+        rawVel = Range.clip(rawVel, -TURRET_AUTO_MAX_REASONABLE_VEL_DEG_PER_SEC, TURRET_AUTO_MAX_REASONABLE_VEL_DEG_PER_SEC);
         filteredTurretVel = TURRET_AUTO_VEL_FILTER_ALPHA * rawVel
                 + (1.0 - TURRET_AUTO_VEL_FILTER_ALPHA) * filteredTurretVel;
+        updatePowerToAngleSign();
 
         double rawAccel = (filteredTurretVel - lastFilteredTurretVel) / dtSeconds;
         filteredTurretAccel = TURRET_AUTO_ACCEL_FILTER_ALPHA * rawAccel
                 + (1.0 - TURRET_AUTO_ACCEL_FILTER_ALPHA) * filteredTurretAccel;
 
-        lastMotorTurretAngle = motorAngle;
+        lastRawTurretAngle = rawAbsAngle;
         lastFilteredTurretVel = filteredTurretVel;
     }
 
-    private double readRawTurretAbsAngleDeg() {
-        double maxVoltage = TURRET_ABS_MAX_VOLTAGE > 0.0 ? TURRET_ABS_MAX_VOLTAGE : turretAbsEncoder.getMaxVoltage();
-        double angle = Range.clip(turretAbsEncoder.getVoltage() / maxVoltage, 0.0, 1.0) * 360.0;
-        return TURRET_ABS_REVERSED ? normalizeDegrees(-angle) : normalizeDegrees(angle);
+    private double readRawTurretEncoderAngleDeg() {
+        double angle = turretEncoderTicksToTurretDegrees(turretEncoder.getCurrentPosition());
+        return TURRET_ENCODER_REVERSED ? -angle : angle;
     }
 
     private void resetAutoAimState() {
@@ -416,6 +345,85 @@ public class Shooter {
         integral = 0.0;
         lastError = 0.0;
         dt.reset();
+    }
+
+    private double applyTurretAnglePower(double anglePower, double maxPower) {
+        double motorPower = Range.clip(anglePower / getPowerToAngleSign(), -maxPower, maxPower);
+        setTurretMotorPower(motorPower);
+        return motorPower;
+    }
+
+    private void setTurretMotorPower(double motorPower) {
+        lastAppliedTurretPower = motorPower;
+        turret.setPower(motorPower);
+    }
+
+    private void updatePowerToAngleSign() {
+        if (Math.abs(TURRET_POWER_TO_ANGLE_SIGN) > 0.5) return;
+        if (Math.abs(learnedPowerToAngleSign) > 0.5) return;
+        if (Math.abs(lastAppliedTurretPower) < 0.08 || Math.abs(filteredTurretVel) < 2.0) return;
+
+        learnedPowerToAngleSign = Math.signum(filteredTurretVel) * Math.signum(lastAppliedTurretPower);
+    }
+
+    private double getPowerToAngleSign() {
+        if (Math.abs(TURRET_POWER_TO_ANGLE_SIGN) > 0.5) {
+            return Math.signum(TURRET_POWER_TO_ANGLE_SIGN);
+        }
+        if (Math.abs(learnedPowerToAngleSign) > 0.5) {
+            return Math.signum(learnedPowerToAngleSign);
+        }
+        return 1.0;
+    }
+
+    private double getTurretGeometrySign() {
+        return TURRET_GEOMETRY_SIGN < 0.0 ? -1.0 : 1.0;
+    }
+
+    private double getTurretHeadingSign() {
+        return TURRET_HEADING_SIGN < 0.0 ? -1.0 : 1.0;
+    }
+
+    private double chooseReachableTurretAngle(double directTargetTurretAngle, double currentTurretAngle, TurretAimCommand command) {
+        double normalizedTarget = normalizeDegrees(directTargetTurretAngle);
+        double bestTarget = 0.0;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        boolean foundReachable = false;
+
+        for (int wrap = -2; wrap <= 2; wrap++) {
+            double candidate = normalizedTarget + 360.0 * wrap;
+            if (candidate < TURRET_AUTO_MIN_ANGLE_DEG || candidate > TURRET_AUTO_MAX_ANGLE_DEG) {
+                continue;
+            }
+
+            double distance = Math.abs(candidate - currentTurretAngle);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestTarget = candidate;
+                foundReachable = true;
+            }
+        }
+
+        if (foundReachable) {
+            command.isUnwinding = Math.abs(bestTarget - normalizedTarget) > 1e-6;
+            return bestTarget;
+        }
+
+        bestDistance = Double.POSITIVE_INFINITY;
+        for (int wrap = -2; wrap <= 2; wrap++) {
+            double candidate = normalizedTarget + 360.0 * wrap;
+            double clipped = Range.clip(candidate, TURRET_AUTO_MIN_ANGLE_DEG, TURRET_AUTO_MAX_ANGLE_DEG);
+            double distance = Math.abs(clipped - currentTurretAngle);
+
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestTarget = clipped;
+            }
+        }
+
+        command.isAtLimit = true;
+        command.isUnwinding = Math.abs(bestTarget - normalizedTarget) > 1e-6;
+        return bestTarget;
     }
 
     private void useTurretPowerControl() {
@@ -450,11 +458,16 @@ public class Shooter {
         public boolean isAtLimit = false;
         public double targetDistance = 0.0;
         public double targetFieldAngle = 0.0;
+        public double currentFieldAimAngle = 0.0;
+        public double fieldError = 0.0;
+        public double directTargetTurretAngle = 0.0;
         public double targetTurretAngle = 0.0;
         public double currentTurretAngle = 0.0;
         public double currentTolerance = 1.0;
         public double error = 0.0;
         public double power = 0.0;
+        public double anglePower = 0.0;
+        public double powerToAngleSign = 1.0;
         public double desiredTurretVelocityDegPerSec = 0.0;
         public double velocityErrorDegPerSec = 0.0;
         public double turretVelocityDegPerSec = 0.0;

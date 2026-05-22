@@ -5,7 +5,6 @@ import static org.firstinspires.ftc.teamcode.constants.robotConfigs.TURRET;
 import com.bylazar.configurables.annotations.Configurable;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.hardware.AnalogInput;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
@@ -22,9 +21,9 @@ import java.util.List;
 @TeleOp(name = "Turret Full Auto Tuner", group = "Tuning")
 public class TurretFullAutoTuner extends OpMode {
     private DcMotorEx turret;
-    private AnalogInput turretAbsEncoder;
+    private DcMotorEx turretEncoder;
 
-    public static double MAX_SAFE_ANGLE = 150.0;
+    public static double MAX_SAFE_ANGLE = 120.0;
     public static double BRAKE_BUFFER_ANGLE = 35.0;
     public static double RETURN_POWER = 0.3;
     public static int REST_TIME_MS = 500;
@@ -35,9 +34,10 @@ public class TurretFullAutoTuner extends OpMode {
     public static double PB_BRAKING_POWER = 0.3;
     public static int PB_SPIN_TIME_MS = 3000;
 
-    public static double VEL_FILTER_ALPHA = 0.85;
-    public static double ACCEL_FILTER_ALPHA = 0.20;
+    public static double VEL_FILTER_ALPHA = Shooter.TURRET_AUTO_VEL_FILTER_ALPHA;
+    public static double ACCEL_FILTER_ALPHA = Shooter.TURRET_AUTO_ACCEL_FILTER_ALPHA;
     public static double NOMINAL_VOLTAGE = 12.0;
+    public static double POWER_TO_ANGLE_SIGN = 0.0;
 
     private enum State {
         START,
@@ -53,7 +53,7 @@ public class TurretFullAutoTuner extends OpMode {
     private final ElapsedTime voltageTimer = new ElapsedTime();
 
     private long lastTime = 0;
-    private double lastMotorAngle = 0.0;
+    private double lastEncoderAngle = 0.0;
     private double filteredVel = 0.0;
     private double lastFilteredVel = 0.0;
     private double filteredAccel = 0.0;
@@ -66,6 +66,8 @@ public class TurretFullAutoTuner extends OpMode {
     private int iteration = 0;
     private int currentDirection = 1;
     private double currentTestPower = 0.0;
+    private double lastAppliedPower = 0.0;
+    private double learnedPowerToAngleSign = 0.0;
     private double pbStartBrakeAngle = 0.0;
     private double pbMeasuredBrakeVel = 0.0;
 
@@ -89,14 +91,17 @@ public class TurretFullAutoTuner extends OpMode {
     @Override
     public void init() {
         turret = hardwareMap.get(DcMotorEx.class, TURRET);
-        turretAbsEncoder = hardwareMap.get(AnalogInput.class, Shooter.TURRET_ABS_ENCODER);
+        turretEncoder = hardwareMap.get(DcMotorEx.class, Shooter.TURRET_ENCODER);
 
         turret.setDirection(DcMotorSimple.Direction.REVERSE);
         turret.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
         turret.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         turret.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
 
-        telemetry.addLine("Ready to tune turret. Absolute encoder is angle; motor encoder is velocity.");
+        turretEncoder.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        turretEncoder.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        telemetry.addLine("Ready to tune turret. ELC uses the intake motor encoder port.");
         telemetry.update();
     }
 
@@ -114,8 +119,7 @@ public class TurretFullAutoTuner extends OpMode {
         if (dt <= 0.00001) return;
         lastTime = currentTime;
 
-        double currentAngle = getAbsAngleDeg();
-        double currentMotorAngle = getMotorAngleDeg();
+        double currentAngle = getEncoderAngleDeg();
 
         if (voltageTimer.milliseconds() > 250 && state != State.DONE && state != State.CALCULATE) {
             currentVoltage = getBatteryVoltage();
@@ -125,7 +129,7 @@ public class TurretFullAutoTuner extends OpMode {
         }
 
         if (!isInitialized) {
-            lastMotorAngle = currentMotorAngle;
+            lastEncoderAngle = currentAngle;
             filteredVel = 0.0;
             lastFilteredVel = 0.0;
             filteredAccel = 0.0;
@@ -133,24 +137,27 @@ public class TurretFullAutoTuner extends OpMode {
             return;
         }
 
-        double rawVel = (currentMotorAngle - lastMotorAngle) / dt;
+        double rawVel = (currentAngle - lastEncoderAngle) / dt;
+        rawVel = Range.clip(rawVel, -Shooter.TURRET_AUTO_MAX_REASONABLE_VEL_DEG_PER_SEC, Shooter.TURRET_AUTO_MAX_REASONABLE_VEL_DEG_PER_SEC);
         filteredVel = VEL_FILTER_ALPHA * rawVel + (1.0 - VEL_FILTER_ALPHA) * filteredVel;
 
         double rawAccel = (filteredVel - lastFilteredVel) / dt;
         filteredAccel = ACCEL_FILTER_ALPHA * rawAccel + (1.0 - ACCEL_FILTER_ALPHA) * filteredAccel;
 
-        lastMotorAngle = currentMotorAngle;
+        lastEncoderAngle = currentAngle;
         lastFilteredVel = filteredVel;
+        updatePowerToAngleSign();
 
         double limitThreshold = MAX_SAFE_ANGLE - BRAKE_BUFFER_ANGLE;
-        boolean hitSafetyLimit = (currentAngle >= limitThreshold && currentDirection == 1)
-                || (currentAngle <= -limitThreshold && currentDirection == -1);
+        int currentAngleDirection = angleDirectionForPower(currentDirection);
+        boolean hitSafetyLimit = (currentAngle >= limitThreshold && currentAngleDirection > 0)
+                || (currentAngle <= -limitThreshold && currentAngleDirection < 0);
 
         if (Math.abs(currentAngle) > MAX_SAFE_ANGLE + 15.0
                 && !isReturningState(state)
                 && state != State.DONE
                 && state != State.CALCULATE) {
-            turret.setPower(0);
+            setTurretPower(0);
             telemetry.addLine("Past safe turret angle. Calculating with collected samples.");
             switchState(State.CALCULATE);
         }
@@ -175,19 +182,19 @@ public class TurretFullAutoTuner extends OpMode {
 
                 currentDirection = iteration % 2 == 0 ? 1 : -1;
                 currentTestPower += 0.1 * dt;
-                turret.setPower(currentTestPower * currentDirection);
+                setTurretPower(currentTestPower * currentDirection);
 
                 if (Math.abs(filteredVel) > 2.0 || hitSafetyLimit) {
                     ksSamples.add(currentTestPower);
                     currentTestPower = 0.0;
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KS_RETURN);
                 }
                 break;
 
             case KS_RETURN:
                 if (returnToCenter(currentAngle) || timer.milliseconds() > 3000) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KS_WAIT);
                 }
                 break;
@@ -209,20 +216,20 @@ public class TurretFullAutoTuner extends OpMode {
 
                 currentDirection = iteration % 2 == 0 ? 1 : -1;
                 double kvPower = KV_TEST_POWERS[iteration / 2];
-                turret.setPower(kvPower * currentDirection);
+                setTurretPower(kvPower * currentDirection);
 
                 if (timer.milliseconds() > 700 || hitSafetyLimit) {
                     if (Math.abs(filteredVel) > 3.0) {
                         kvData.add(new double[]{Math.abs(filteredVel), Math.max(0.0, kvPower - rawKs)});
                     }
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KV_RETURN);
                 }
                 break;
 
             case KV_RETURN:
                 if (returnToCenter(currentAngle) || timer.milliseconds() > 3000) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KV_WAIT);
                 }
                 break;
@@ -243,7 +250,7 @@ public class TurretFullAutoTuner extends OpMode {
 
                 currentDirection = iteration % 2 == 0 ? 1 : -1;
                 double kaPower = KA_TEST_POWERS[iteration / 2];
-                turret.setPower(kaPower * currentDirection);
+                setTurretPower(kaPower * currentDirection);
 
                 if (timer.milliseconds() < 300 && Math.abs(filteredAccel) > 10.0) {
                     double netPower = Math.max(0.0, kaPower - rawKs - rawKv * Math.abs(filteredVel));
@@ -251,14 +258,14 @@ public class TurretFullAutoTuner extends OpMode {
                 }
 
                 if (timer.milliseconds() > 400 || hitSafetyLimit) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KA_RETURN);
                 }
                 break;
 
             case KA_RETURN:
                 if (returnToCenter(currentAngle) || timer.milliseconds() > 3000) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.KA_WAIT);
                 }
                 break;
@@ -278,21 +285,21 @@ public class TurretFullAutoTuner extends OpMode {
 
                 currentDirection = iteration % 2 == 0 ? 1 : -1;
                 double pbPower = PB_TEST_POWERS[iteration / 2] * currentDirection;
-                turret.setPower(pbPower);
+                setTurretPower(pbPower);
 
                 if (timer.milliseconds() >= PB_SPIN_TIME_MS || hitSafetyLimit) {
                     pbMeasuredBrakeVel = filteredVel;
                     pbStartBrakeAngle = currentAngle;
-                    turret.setPower(-currentDirection * PB_BRAKING_POWER);
+                    setTurretPower(-currentDirection * PB_BRAKING_POWER);
                     switchState(State.PB_BRAKE);
                 }
                 break;
 
             case PB_BRAKE:
-                if (((Math.signum(filteredVel) != currentDirection || Math.abs(filteredVel) < 2.0)
+                if (((Math.signum(filteredVel) != Math.signum(pbMeasuredBrakeVel) || Math.abs(filteredVel) < 2.0)
                         && timer.milliseconds() > 150)
                         || timer.milliseconds() > 3000) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     pbData.add(new double[]{Math.abs(pbMeasuredBrakeVel), Math.abs(currentAngle - pbStartBrakeAngle)});
                     switchState(State.PB_RETURN);
                 }
@@ -300,7 +307,7 @@ public class TurretFullAutoTuner extends OpMode {
 
             case PB_RETURN:
                 if (returnToCenter(currentAngle) || timer.milliseconds() > 3000) {
-                    turret.setPower(0);
+                    setTurretPower(0);
                     switchState(State.PB_WAIT);
                 }
                 break;
@@ -328,7 +335,7 @@ public class TurretFullAutoTuner extends OpMode {
                 break;
 
             case DONE:
-                turret.setPower(0);
+                setTurretPower(0);
                 telemetry.addLine("=== TUNING COMPLETE ===");
                 telemetry.addData("Data Points", "kS:%d, kV:%d, kA:%d, PB:%d", ksSamples.size(), kvData.size(), kaData.size(), pbData.size());
                 telemetry.addData("Avg Test Voltage", "%.2f V", avgTestVoltage);
@@ -343,10 +350,11 @@ public class TurretFullAutoTuner extends OpMode {
 
         telemetry.addData("State", state);
         telemetry.addData("Voltage", "%.2f V", currentVoltage);
-        telemetry.addData("Abs Angle", "%.1f deg", currentAngle);
-        telemetry.addData("Motor Angle", "%.1f deg", currentMotorAngle);
-        telemetry.addData("Motor Vel", "%.1f deg/s", filteredVel);
-        telemetry.addData("Motor Accel", "%.1f deg/s^2", filteredAccel);
+        telemetry.addData("ELC Angle", "%.1f deg", currentAngle);
+        telemetry.addData("ELC Ticks", turretEncoder.getCurrentPosition());
+        telemetry.addData("ELC Vel", "%.1f deg/s", filteredVel);
+        telemetry.addData("ELC Accel", "%.1f deg/s^2", filteredAccel);
+        telemetry.addData("Power->Angle Sign", "%.0f", getPowerToAngleSign());
         telemetry.addData("Iteration", iteration);
         telemetry.update();
     }
@@ -377,27 +385,48 @@ public class TurretFullAutoTuner extends OpMode {
 
     private boolean returnToCenter(double currentAngle) {
         if (Math.abs(currentAngle) > 5.0) {
-            turret.setPower(-Math.signum(currentAngle) * RETURN_POWER);
+            double returnPower = -Math.signum(currentAngle) * RETURN_POWER / getPowerToAngleSign();
+            setTurretPower(returnPower);
             return false;
         }
 
-        turret.setPower(0);
+        setTurretPower(0);
         return true;
     }
 
-    private double getMotorAngleDeg() {
-        return turret.getCurrentPosition() / Shooter.TURRET_FULL_RANGE_ENCODER * Shooter.TURRET_FULL_RANGE_DEGREE;
+    private void setTurretPower(double power) {
+        lastAppliedPower = power;
+        turret.setPower(power);
     }
 
-    private double getAbsAngleDeg() {
-        double maxVoltage = Shooter.TURRET_ABS_MAX_VOLTAGE > 0.0
-                ? Shooter.TURRET_ABS_MAX_VOLTAGE
-                : turretAbsEncoder.getMaxVoltage();
-        double angle = Range.clip(turretAbsEncoder.getVoltage() / maxVoltage, 0.0, 1.0) * 360.0;
-        if (Shooter.TURRET_ABS_REVERSED) {
+    private void updatePowerToAngleSign() {
+        if (Math.abs(POWER_TO_ANGLE_SIGN) > 0.5) return;
+        if (Math.abs(learnedPowerToAngleSign) > 0.5) return;
+        if (Math.abs(lastAppliedPower) < 0.08 || Math.abs(filteredVel) < 2.0) return;
+
+        learnedPowerToAngleSign = Math.signum(filteredVel) * Math.signum(lastAppliedPower);
+    }
+
+    private double getPowerToAngleSign() {
+        if (Math.abs(POWER_TO_ANGLE_SIGN) > 0.5) {
+            return Math.signum(POWER_TO_ANGLE_SIGN);
+        }
+        if (Math.abs(learnedPowerToAngleSign) > 0.5) {
+            return Math.signum(learnedPowerToAngleSign);
+        }
+        return 1.0;
+    }
+
+    private int angleDirectionForPower(int powerDirection) {
+        return (int) Math.signum(powerDirection * getPowerToAngleSign());
+    }
+
+    private double getEncoderAngleDeg() {
+        double angle = Shooter.turretEncoderTicksToTurretDegrees(turretEncoder.getCurrentPosition());
+        if (Shooter.TURRET_ENCODER_REVERSED) {
             angle = -angle;
         }
-        return normalizeDegrees(angle - Shooter.TURRET_ABS_ZERO_DEG);
+        return angle - Shooter.TURRET_ENCODER_ZERO_DEG;
     }
 
     private double average(List<Double> data) {

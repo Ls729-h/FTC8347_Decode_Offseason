@@ -38,7 +38,6 @@ public class A_2 extends LinearOpMode {
     public void runOpMode() throws InterruptedException {
         robot.init(hardwareMap);
         robot.drivetrain.pinPoint.setPosition(new Pose2D(DistanceUnit.INCH, START_X, START_Y, AngleUnit.RADIANS, START_HEADING_RAD));
-        robot.shooter.setPPHeading(0.0);
 
         waitForStart();
 
@@ -50,9 +49,10 @@ public class A_2 extends LinearOpMode {
             double robotY = current.getY(DistanceUnit.INCH);
             double robotHeading = current.getHeading(AngleUnit.DEGREES);
             double targetAngle = Math.toDegrees(Math.atan2(TARGET_Y - robotY, TARGET_X - robotX));
-            double turretTarget = normalizeDegrees(targetAngle - robotHeading);
+            double signedRobotHeading = (Shooter.TURRET_HEADING_SIGN < 0.0 ? -1.0 : 1.0) * robotHeading;
+            double turretGeometrySign = Shooter.TURRET_GEOMETRY_SIGN < 0.0 ? -1.0 : 1.0;
+            double turretTarget = turretGeometrySign * normalizeDegrees(targetAngle - signedRobotHeading);
             double distance = Math.hypot(TARGET_Y - robotY, TARGET_X - robotX);
-            boolean intakeRequested = gamepad1.right_trigger > 0.5;
 
             if (gamepad1.left_bumper && !lastLeftBumper) {
                 shooterOn = !shooterOn;
@@ -84,14 +84,14 @@ public class A_2 extends LinearOpMode {
                     robot.shooter.setShooterByDis(distance + distanceCorrection);
                 } else {
                     robot.shooter.setShooterVelocity(manualShooterVelocity);
-                    robot.shooter.panelTo(manualHoodPos);
+//                    robot.shooter.panelTo(manualHoodPos);
                 }
 
                 robot.intake.gateOpen();
             } else {
                 robot.intake.gateClose();
                 robot.shooter.shooterHold();
-                robot.shooter.turretToDegree(0.0);
+                robot.shooter.stopAutoAimTurret();
             }
 
             if (gamepad1.right_trigger > 0.05) {
@@ -109,11 +109,22 @@ public class A_2 extends LinearOpMode {
             telemetry.addData("y", "%.2f", robotY);
             telemetry.addData("heading", "%.2f", robotHeading);
             telemetry.addData("target angle", "%.2f", targetAngle);
-            telemetry.addData("turret target old geometry", "%.2f", turretTarget + turretCorrection);
+            telemetry.addData("turret target simple geometry", "%.2f", turretTarget + turretCorrection);
             telemetry.addData("turret abs", "%.2f", robot.shooter.getTurretAbsoluteDegree());
+            telemetry.addData("target field angle", "%.2f", aimCommand != null ? aimCommand.targetFieldAngle : targetAngle + turretCorrection);
+            telemetry.addData("current field aim", "%.2f", aimCommand != null ? aimCommand.currentFieldAimAngle : 0.0);
+            telemetry.addData("field aim error", "%.2f", aimCommand != null ? aimCommand.fieldError : 0.0);
+            telemetry.addData("direct turret target", "%.2f", aimCommand != null ? aimCommand.directTargetTurretAngle : 0.0);
+            telemetry.addData("target turret angle", "%.2f", aimCommand != null ? aimCommand.targetTurretAngle : 0.0);
+            telemetry.addData("current turret angle", "%.2f", aimCommand != null ? aimCommand.currentTurretAngle : robot.shooter.getTurretAbsoluteDegree());
             telemetry.addData("turret error", "%.2f", aimCommand != null ? aimCommand.error : 0.0);
             telemetry.addData("turret vel", "%.2f", aimCommand != null ? aimCommand.turretVelocityDegPerSec : robot.shooter.getAngVel());
             telemetry.addData("turret vel target", "%.2f", aimCommand != null ? aimCommand.desiredTurretVelocityDegPerSec : 0.0);
+            telemetry.addData("turret angle power", "%.3f", aimCommand != null ? aimCommand.anglePower : 0.0);
+            telemetry.addData("turret motor power", "%.3f", aimCommand != null ? aimCommand.power : 0.0);
+            telemetry.addData("power->angle sign", "%.0f", aimCommand != null ? aimCommand.powerToAngleSign : robot.shooter.getTurretPowerToAngleSign());
+            telemetry.addData("turret unwinding", aimCommand != null && aimCommand.isUnwinding);
+            telemetry.addData("turret at limit", aimCommand != null && aimCommand.isAtLimit);
             telemetry.addData("aim locked", aimCommand != null && aimCommand.isAimLocked);
             telemetry.addData("distance", "%.2f", distance);
             telemetry.addData("shooter target", "%.2f", autoShooter ? targetVelocity : manualShooterVelocity);

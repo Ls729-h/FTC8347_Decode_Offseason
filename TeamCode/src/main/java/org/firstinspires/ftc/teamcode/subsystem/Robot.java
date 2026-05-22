@@ -21,6 +21,6 @@ public class Robot {
         intake.gateClose();
         intake.intakeStop();
         shooter.shooterStop();
-        shooter.turretToDegree(0.0);
+        shooter.stopAutoAimTurret();
     }
 }
